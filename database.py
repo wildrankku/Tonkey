@@ -5,26 +5,35 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ServerSelectionTimeoutError
 
 class Database:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
     def __init__(self):
+        if self._initialized:
+            return
+            
         self.uri = os.getenv("MONGO_URI")
         if not self.uri:
-            raise ValueError("❌ MONGO_URI environment variable missing!")
-        
-        # Explicit database name extraction
-        if "/?" in self.uri:
-            self.db_name = "SakuraStats"  # Default name if not in URI
-        else:
-            self.db_name = self.uri.split("/")[-1].split("?")[0]
+            raise ValueError("❌ MONGO_URI environment variable not set!")
             
-        self.client = AsyncIOMotorClient(self.uri)
-        self.db = self.client[self.db_name]  # Explicit database selection
-        
-        asyncio.run(self._verify_connection())
+        self.client = AsyncIOMotorClient(
+            self.uri,
+            serverSelectionTimeoutMS=30000,
+            connectTimeoutMS=20000
+        )
+        self.db = self.client.get_database()
+        asyncio.run(self._initialize())
+        self._initialized = True
 
-    async def _verify_connection(self):
+    async def _initialize(self):
         try:
             await self.client.admin.command('ping')
-            print(f"✅ Connected to MongoDB | Database: {self.db_name}")
+            print("✅ MongoDB Connected!")
             
             # Initialize collections
             self.daily_stats = self.db.daily
@@ -34,7 +43,7 @@ class Database:
             self.sudo_users = self.db.sudo_users
             self.bot_analytics = self.db.bot_analytics
             
-            # Initialize uptime
+            # Create uptime record
             if not await self.bot_analytics.find_one({"_id": "uptime"}):
                 await self.bot_analytics.insert_one({
                     "_id": "uptime",
@@ -45,4 +54,5 @@ class Database:
             print(f"❌ Connection Failed: {str(e)}")
             raise
 
+# Singleton instance
 db = Database()
