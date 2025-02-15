@@ -1,31 +1,30 @@
 import os
-import datetime
+import asyncio  # ✅ Import added
+from datetime import datetime, UTC  # ✅ Correct UTC import
 from motor.motor_asyncio import AsyncIOMotorClient
-from datetime import UTC
 
 class Database:
     def __init__(self):
         self.client = AsyncIOMotorClient(os.getenv("MONGO_URI"))
         self.db = self.client["SakuraStats"]
         
-        # Existing Collections
+        # Collections
         self.daily_stats = self.db["daily"]
         self.overall_stats = self.db["overall"]
+        self.groups = self.db["groups"]
+        self.global_users = self.db["global_users"]
+        self.sudo_users = self.db["sudo_users"]
+        self.bot_analytics = self.db["bot_analytics"]
         
-        # New Features Collections
-        self.groups = self.db["groups"]          # /topgroups के लिए
-        self.global_users = self.db["global_users"] # /topusers के लिए
-        self.sudo_users = self.db["sudo_users"]    # /sudolist के लिए
-        self.bot_analytics = self.db["bot_analytics"] # /stats के लिए
-        
-        # Initialize Uptime
-        asyncio.run(self.init_uptime())
-    
-    async def init_uptime(self):
+        # Initialize async
+        self.loop = asyncio.get_event_loop()
+        self.loop.run_until_complete(self.async_init())  # ✅ Correct async init
+
+    async def async_init(self):  # ✅ Separate async method
         if not await self.bot_analytics.find_one({"_id": "uptime"}):
             await self.bot_analytics.insert_one({
                 "_id": "uptime",
-                "start_time": datetime.datetime.now(UTC)
+                "start_time": datetime.now(UTC)  # ✅ datetime.UTC fixed
             })
     
     async def track_group(self, group_id: int, group_name: str):
