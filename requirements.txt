@@ -1,5 +1,4 @@
-# ------------------- Core Dependencies -------------------
-python-telegram-bot==21.0.1
+python-telegram-bot[job-queue]==21.0.1  # ✅ JobQueue सपोर्ट जोड़ें
 motor==3.3.2
 python-dotenv==1.0.0
 aiohttp==3.9.3
