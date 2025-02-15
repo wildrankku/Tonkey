@@ -101,6 +101,3 @@ async def bot_stats(update: Update, context: CallbackContext):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_stats")]]),
         parse_mode="MarkdownV2"
     )
-
-# Continue with other handlers? (Next file: admin_handlers.py)
-**Next** लिखें मैं एडमिन हैंडलर्स और बाकी कोड दूंगा।
