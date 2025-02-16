@@ -276,6 +276,7 @@ async def stats(update: Update, context: CallbackContext):
 # ------------------- Broadcast System -------------------
 async def broadcast(update: Update, context: CallbackContext):
     if not await is_sudo(update.effective_user.id):
+        await update.message.reply_text("❌ Sudo access required!")
         return
     
     args = context.args
@@ -285,7 +286,8 @@ async def broadcast(update: Update, context: CallbackContext):
     }
     message = " ".join([arg for arg in args if not arg.startswith("-")])
     
-    success = 0
+    success = {"groups": 0, "users": 0}
+    
     if not flags["user"]:
         groups = await tracked_groups.distinct("group_id")
         for group_id in groups:
@@ -293,7 +295,7 @@ async def broadcast(update: Update, context: CallbackContext):
                 msg = await context.bot.send_message(group_id, message)
                 if flags["pin"]:
                     await msg.pin()
-                success += 1
+                success["groups"] += 1
             except:
                 continue
     
@@ -302,11 +304,15 @@ async def broadcast(update: Update, context: CallbackContext):
         for user_id in users:
             try:
                 await context.bot.send_message(user_id, message)
-                success += 1
+                success["users"] += 1
             except:
                 continue
     
-    await update.message.reply_text(f"📢 Broadcast sent to {success} recipients")
+    await update.message.reply_text(
+        f"📢 Broadcast Results:\n"
+        f"• Groups: {success['groups']}\n"
+        f"• Users: {success['users']}"
+    )
 
 # ------------------- Button Handler -------------------
 async def button_handler(update: Update, context: CallbackContext):
