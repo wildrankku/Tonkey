@@ -1,0 +1,330 @@
+import os
+import asyncio
+import datetime
+from datetime import UTC, timedelta
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    CallbackContext,
+    CallbackQueryHandler,
+)
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
+from telegram.error import BadRequest
+
+# ------------------- Environment Setup -------------------
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
+LOGGER_GROUP_ID = int(os.getenv("LOGGER_GROUP_ID", 0))
+
+# ------------------- MongoDB Connection -------------------
+client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+db = client["GroupStats"]
+daily_stats = db["daily"]
+overall_stats = db["overall"]
+
+# ------------------- Utility Functions -------------------
+async def clean_name(name: str) -> str:
+    if not name:
+        return "Anonymous"
+    cleaned = re.sub(r'([_*\[\]()~`>#+=|{}.!-])', r'\\\1', name)
+    return cleaned[:25]
+
+async def log_event(context: CallbackContext, text: str):
+    if LOGGER_GROUP_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=LOGGER_GROUP_ID,
+                text=text,
+                parse_mode="MarkdownV2",
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            print(f"Logger Error: {e}")
+
+# ------------------- New Chat Member Logger -------------------
+async def new_member_logger(update: Update, context: CallbackContext):
+    if update.message.new_chat_members:
+        for member in update.message.new_chat_members:
+            if member.id == context.bot.id:
+                group_title = re.sub(r'([_*\[\]()~`>#+=|{}.!-])', r'\\\1', update.message.chat.title)
+                added_by = update.message.from_user.mention_markdown_v2()
+                log_text = (
+                    f"🌸 *Bot Added To Group* 🌸\n\n"
+                    f"🏮 *Group*: {group_title}\n"
+                    f"📜 *ID*: `{update.message.chat.id}`\n"
+                    f"🎎 *Added by*: {added_by}"
+                )
+                await log_event(context, log_text)
+
+# ------------------- Message Tracking -------------------
+async def track_message(update: Update, context: CallbackContext) -> None:
+    if not update.message or update.message.chat.type not in ["group", "supergroup"]:
+        return
+    
+    if update.message.sticker or update.message.via_bot or (update.message.from_user and update.message.from_user.is_bot):
+        return
+
+    user = update.message.from_user
+    chat = update.message.chat
+    now = datetime.datetime.now(UTC)
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    try:
+        await daily_stats.update_one(
+            {"user_id": user.id, "group_id": chat.id, "date": start_of_day},
+            {"$inc": {"count": 1}, "$set": {"first_name": await clean_name(user.first_name), "user_id": user.id}},
+            upsert=True
+        )
+        await overall_stats.update_one(
+            {"user_id": user.id, "group_id": chat.id},
+            {"$inc": {"count": 1}, "$set": {"first_name": await clean_name(user.first_name), "user_id": user.id}},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"Database Error: {e}")
+
+# ------------------- Start Command (Fixed Back Navigation) -------------------
+async def start(update: Update, context: CallbackContext) -> None:
+    try:
+        user = update.effective_user
+        log_text = (
+            f"🌸 *New User Started Bot* 🌸\n"
+            f"🎴 *User*: {user.mention_markdown_v2()}\n"
+            f"🆔 *ID*: `{user.id}`"
+        )
+        await log_event(context, log_text)
+
+        keyboard = [
+            [InlineKeyboardButton("➕ Add me in your group", url=f"https://t.me/sakura_stats_bot?startgroup=true")],
+            [
+                InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
+                InlineKeyboardButton("🔄 Update", url="https://t.me/samurais_network")
+            ],
+            [
+                InlineKeyboardButton("👑 Owner", url="https://t.me/Itz_Marv1n"),
+                InlineKeyboardButton("💬 Support", url="https://t.me/anime_group_chat_en")
+            ]
+        ]
+        
+        # New properly escaped caption
+        caption = (
+            "🌸 *Welcome to Sakura Stats\\!* 🌸\n\n"
+            "Konichiwa\\! \\(≧◡≦\\) ♡✨\n"
+            "I'm Sakura Stats, here to keep track of all the lively conversations in your group\\! 🎀📊\n\n"
+            "💬 Track your activity & climb the leaderboard\\!\n"
+            "🏆 Compete with friends for the top ranks\\!\n"
+            "🔄 Daily rankings reset every 24 hours\\!"
+        )
+
+        # Handle both new messages and callback queries
+        if update.callback_query:
+            await update.callback_query.message.edit_caption(
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="MarkdownV2"
+            )
+        else:
+            await update.message.reply_photo(
+                photo="https://telegra.ph/file/28e287f80fd6a7ba67d62-85fbaa4e11a0123287.jpg",
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="MarkdownV2"
+            )
+    except Exception as e:
+        print(f"Start Error: {e}")
+
+# ------------------- GSTAT Command -------------------
+async def gstat(update: Update, context: CallbackContext) -> None:
+    try:
+        if update.message.chat.type not in ["group", "supergroup"]:
+            return
+            
+        msg = await update.message.reply_photo(
+            photo="https://telegra.ph/file/382aff205e8cd367b824c-ca2fc225a216dc1542.jpg",
+            caption="🌸 Loading Sakura Leaderboard..."
+        )
+        await show_leaderboard(context, msg.chat_id, msg.message_id, False)
+    except Exception as e:
+        print(f"/gstat Error: {e}")
+
+# ------------------- Leaderboard System -------------------
+async def show_leaderboard(context: CallbackContext, chat_id: int, message_id: int, is_today: bool):
+    try:
+        collection = daily_stats if is_today else overall_stats
+        date_filter = {}
+        
+        if is_today:
+            today = datetime.datetime.now(UTC)
+            start_of_day = today.replace(hour=0, minute=0, second=0, microsecond=0)
+            date_filter = {"date": start_of_day}
+        
+        pipeline = [
+            {"$match": {"group_id": chat_id, **date_filter}},
+            {"$group": {
+                "_id": "$user_id",
+                "count": {"$sum": "$count"},
+                "name": {"$first": "$first_name"},
+                "user_id": {"$first": "$user_id"}
+            }},
+            {"$sort": {"count": -1}},
+            {"$limit": 10}
+        ]
+        
+        users = await collection.aggregate(pipeline).to_list(length=10)
+        total = sum(user.get("count", 0) for user in users)
+        
+        leaderboard = []
+        for idx, user in enumerate(users, 1):
+            name = user.get("name", "Unknown")
+            count = user.get("count", 0)
+            user_id = user.get("user_id", "")
+            leaderboard.append(f"{idx}\\. 🌸 [{name}](tg://user?id={user_id}) • {count:,}")
+        
+        text = (
+            f"🌸 *Sakura {'Daily' if is_today else 'Overall'} Leaderboard* 🌸\n\n"
+            + "\n".join(leaderboard)
+            + f"\n\n✉️ *Total Messages*: {total:,}"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("📅 Today", callback_data="today"), InlineKeyboardButton("🏆 Overall", callback_data="overall")],
+            [InlineKeyboardButton("❌ Close", callback_data="close")]
+        ]
+        
+        await context.bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id,
+            caption=text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="MarkdownV2"
+        )
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            print(f"Leaderboard Error: {e}")
+
+# ------------------- Auto Daily Reset -------------------
+async def daily_reset(context: CallbackContext):
+    now = datetime.datetime.now(UTC)
+    yesterday = now - timedelta(days=1)
+    
+    all_groups = await daily_stats.distinct("group_id")
+    
+    for group_id in all_groups:
+        try:
+            pipeline = [
+                {"$match": {"group_id": group_id, "date": yesterday}},
+                {"$group": {
+                    "_id": "$user_id",
+                    "count": {"$sum": "$count"},
+                    "name": {"$first": "$first_name"},
+                }},
+                {"$sort": {"count": -1}},
+                {"$limit": 10}
+            ]
+            users = await daily_stats.aggregate(pipeline).to_list(length=10)
+            
+            if not users:
+                continue
+                
+            total = sum(user["count"] for user in users)
+            emoji_rank = ["🏆", "🥈", "🥉"] + ["🔹"]*7
+            
+            leaderboard = []
+            for idx, user in enumerate(users, 0):
+                emoji = emoji_rank[idx] if idx < 3 else f"{idx+1}."
+                leaderboard.append(f"{emoji} {user['name']} • {user['count']}")
+            
+            reset_msg = (
+                f"🌸 *Sakura Daily Reset* 🌸\n"
+                f"✨ Top 10 Blossoms of the Day ✨\n\n"
+                + "\n".join(leaderboard) +
+                f"\n\n💬 *Total Messages*: {total}\n"
+                "🔄 Rankings refreshed\\! Keep blooming\\! 🌸"
+            )
+            
+            await context.bot.send_photo(
+                chat_id=group_id,
+                photo="https://telegra.ph/file/382aff205e8cd367b824c-ca2fc225a216dc1542.jpg",
+                caption=reset_msg,
+                parse_mode="MarkdownV2"
+            )
+            await daily_stats.delete_many({"group_id": group_id, "date": yesterday})
+        except Exception as e:
+            print(f"Daily Reset Error: {e}")
+
+# ------------------- Settings Handler (Fixed) -------------------
+async def settings_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    explanation = (
+        "🌸 *Sakura Stats Settings* 🌸\n\n"
+        "• 📊 Tracks messages in real\\-time\n"
+        "• 🏆 Daily \\& Overall leaderboards\n"
+        "• 🕒 Auto\\-reset at midnight \\(UTC\\)\n\n"
+        "⚙️ Configure via PM with admins\\."
+    )
+    
+    try:
+        await query.message.edit_caption(
+            caption=explanation,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]]),
+            parse_mode="MarkdownV2"
+        )
+    except BadRequest as e:
+        print(f"Settings Error: {e}")
+
+# ------------------- Button Handler (Fixed) -------------------
+button_lock = asyncio.Lock()
+
+async def button_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    
+    async with button_lock:
+        try:
+            if query.data == "close":
+                await query.message.delete()
+            elif query.data == "settings":
+                await settings_handler(update, context)
+            elif query.data == "back":
+                await start(update, context)  # Directly call start handler
+            elif query.data in ["today", "overall"]:
+                await show_leaderboard(
+                    context,
+                    query.message.chat.id,
+                    query.message.message_id,
+                    is_today=(query.data == "today")
+                )
+        except Exception as e:
+            print(f"Button Error: {e}")
+
+# ------------------- Error Handler -------------------
+async def error_handler(update: Update, context: CallbackContext):
+    print(f"⚠️ Critical Error: {context.error}")
+
+# ------------------- Main Function -------------------
+if __name__ == "__main__":
+    application = Application.builder().token(TOKEN).concurrent_updates(True).build()
+    
+    # Handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("gstat", gstat))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member_logger))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, track_message))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Error Handler
+    application.add_error_handler(error_handler)
+    
+    # Scheduler
+    job_queue = application.job_queue
+    job_queue.run_daily(daily_reset, time=datetime.time(0, 0, tzinfo=datetime.timezone.utc))
+    
+    application.run_polling()
