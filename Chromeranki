@@ -441,7 +441,7 @@ async def daily_reset(context: CallbackContext):
 def main():
     application = Application.builder().token(TOKEN).build()
     
-    # Handlers
+    # Command Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("gstat", gstat))
     application.add_handler(CommandHandler("topgroups", topgroups))
@@ -449,8 +449,15 @@ def main():
     application.add_handler(CommandHandler("profile", profile))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("addsudo", addsudo))
+    application.add_handler(CommandHandler("rmsudo", rmsudo))
+    application.add_handler(CommandHandler("sudolist", sudolist))
     
+    # Message Handlers
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, track_message))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_group))
+    
+    # Callback Handler
     application.add_handler(CallbackQueryHandler(button_handler))
     
     # Jobs
