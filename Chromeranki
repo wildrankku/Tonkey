@@ -43,8 +43,92 @@ async def log_event(context: CallbackContext, text: str):
     if LOGGER_GROUP_ID:
         await context.bot.send_message(LOGGER_GROUP_ID, text, parse_mode="MarkdownV2")
 
+async def is_owner(user_id: int) -> bool:
+    return user_id == OWNER_ID
+
 async def is_sudo(user_id: int) -> bool:
-    return user_id == OWNER_ID or await sudo_list.find_one({"user_id": user_id})
+    return await is_owner(user_id) or await sudo_list.find_one({"user_id": user_id})
+
+# ------------------- New Group Logger -------------------
+async def new_group(update: Update, context: CallbackContext):
+    if update.message.new_chat_members and context.bot.id in [u.id for u in update.message.new_chat_members]:
+        group = update.message.chat
+        adder = update.message.from_user
+        
+        await tracked_groups.update_one(
+            {"group_id": group.id},
+            {"$set": {"group_name": await escape_markdown(group.title)}},
+            upsert=True
+        )
+        
+        log_text = (
+            f"🌸 **New Group Added** 🌸\n\n"
+            f"🏷 Name: `{group.title}`\n"
+            f"🆔 ID: `{group.id}`\n"
+            f"👤 Added by: {adder.mention_markdown_v2()}"
+        )
+        await log_event(context, log_text)
+
+# ------------------- Sudo Management -------------------
+async def addsudo(update: Update, context: CallbackContext):
+    if not await is_owner(update.effective_user.id):
+        await update.message.reply_text("❌ Only owner can use this command!")
+        return
+    
+    target_user = None
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    elif context.args:
+        try:
+            target_user = await context.bot.get_chat(context.args[0])
+        except:
+            pass
+    
+    if not target_user:
+        await update.message.reply_text("❌ Reply to a user or provide username/userid!")
+        return
+    
+    await sudo_list.update_one(
+        {"user_id": target_user.id},
+        {"$set": {"username": target_user.username}},
+        upsert=True
+    )
+    await update.message.reply_text(f"✅ Added @{target_user.username} to sudo list!")
+
+async def rmsudo(update: Update, context: CallbackContext):
+    if not await is_owner(update.effective_user.id):
+        await update.message.reply_text("❌ Only owner can use this command!")
+        return
+    
+    target_user = None
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    elif context.args:
+        try:
+            target_user = await context.bot.get_chat(context.args[0])
+        except:
+            pass
+    
+    if not target_user:
+        await update.message.reply_text("❌ Reply to a user or provide username/userid!")
+        return
+    
+    result = await sudo_list.delete_one({"user_id": target_user.id})
+    if result.deleted_count > 0:
+        await update.message.reply_text(f"✅ Removed @{target_user.username} from sudo list!")
+    else:
+        await update.message.reply_text("❌ User not in sudo list!")
+
+async def sudolist(update: Update, context: CallbackContext):
+    if not await is_sudo(update.effective_user.id):
+        await update.message.reply_text("❌ You need sudo access to use this command!")
+        return
+    
+    sudos = await sudo_list.find({}).to_list(None)
+    text = "👑 **Sudo Users List** 👑\n\n" + "\n".join(
+        [f"• @{u['username']} (`{u['user_id']}`)" for u in sudos]
+    )
+    await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 # ------------------- /start Command -------------------
 async def start(update: Update, context: CallbackContext):
